@@ -718,7 +718,7 @@
     #prog-wrap {
       display: none;
       flex-direction: column;
-      gap: 7px;
+      gap: 12px;
     }
 
     #prog-wrap.show {
@@ -890,7 +890,7 @@
     </div>
 
     <!-- Progress -->
-    <div id="prog-wrap">
+    <div id="prog-wrap" class="block">
       <div class="prog-header">
         <span class="prog-title" id="prog-title">Processing…</span>
         <span class="prog-pct" id="prog-pct">0%</span>
@@ -1150,9 +1150,9 @@
       const url = document.getElementById('url-in').value.trim();
       if (!url) { alert('Enter a URL first.'); return; }
       setBusy(true);
-      // Move progress bar under URL block
+      // Move progress bar under URL block (after the `.block` container)
       const pw = document.getElementById('prog-wrap');
-      document.getElementById('url-btn').parentElement.after(pw);
+      document.getElementById('url-btn').closest('.block').after(pw);
 
       const task_id = await startIngest({ url });
       if (task_id) poll(task_id, url);
@@ -1168,9 +1168,9 @@
       if (!selectedFile) return;
       setBusy(true);
 
-      // Move progress bar under Document block
+      // Move progress bar under Document block (after the `.block` container)
       const pw = document.getElementById('prog-wrap');
-      document.getElementById('file-btn').parentElement.after(pw);
+      document.getElementById('file-btn').closest('.block').after(pw);
 
       const fd = new FormData();
       fd.append('file', selectedFile, selectedFile.name);
