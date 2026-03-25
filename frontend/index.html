@@ -1150,14 +1150,26 @@
       const url = document.getElementById('url-in').value.trim();
       if (!url) { alert('Enter a URL first.'); return; }
       setBusy(true);
-      // Move progress bar under URL block (after the `.block` container)
+      // Show progress bar right under the URL block
       const pw = document.getElementById('prog-wrap');
       document.getElementById('url-btn').closest('.block').after(pw);
 
-      const fd = new FormData();
-      fd.append('url', url);
-      const task_id = await startIngest(fd);
-      if (task_id) poll(task_id, url);
+      try {
+        const r = await fetch('/api/ingest/url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
+          throw new Error(err.detail || `HTTP ${r.status}`);
+        }
+        const d = await r.json();
+        if (d.task_id) poll(d.task_id, url);
+      } catch (e) {
+        alert('Ingestion error: ' + e.message);
+        setBusy(false);
+      }
     }
 
     function onFileSelect(e) {
@@ -1169,30 +1181,23 @@
     async function ingestDoc() {
       if (!selectedFile) return;
       setBusy(true);
-
-      // Move progress bar under Document block (after the `.block` container)
+      // Show progress bar right under the Document block
       const pw = document.getElementById('prog-wrap');
       document.getElementById('file-btn').closest('.block').after(pw);
 
-      const fd = new FormData();
-      fd.append('file', selectedFile, selectedFile.name);
-      const task_id = await startIngest(fd);
-      if (task_id) poll(task_id, selectedFile.name);
-    }
-
-    async function startIngest(fd) {
       try {
-        const r = await fetch('/api/ingest', { method: 'POST', body: fd });
+        const fd = new FormData();
+        fd.append('file', selectedFile, selectedFile.name);
+        const r = await fetch('/api/ingest/doc', { method: 'POST', body: fd });
         if (!r.ok) {
           const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
           throw new Error(err.detail || `HTTP ${r.status}`);
         }
         const d = await r.json();
-        return d.task_id ?? null;
+        if (d.task_id) poll(d.task_id, selectedFile.name);
       } catch (e) {
         alert('Ingestion error: ' + e.message);
         setBusy(false);
-        return null;
       }
     }
 

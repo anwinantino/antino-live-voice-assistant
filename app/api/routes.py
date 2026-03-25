@@ -162,51 +162,29 @@ def _run_doc_ingestion(task_id: str, file_bytes: bytes, filename: str, content_t
         tracker.update(task_id, 100, "error", f"Error: {str(e)}")
 
 
-@router.post("/ingest")
-async def ingest(
-    request: Request,
-    background_tasks: BackgroundTasks,
-):
-    """
-    Ingest a URL or uploaded document into Pinecone.
-    """
+@router.post("/ingest/url")
+async def ingest_url(request: IngestRequest, background_tasks: BackgroundTasks):
+    """Ingest a URL into Pinecone. Accepts JSON body: {"url": "https://..."}"""
+    if not request.url:
+        raise HTTPException(status_code=400, detail="Field 'url' is required.")
     task_id = tracker.create_task()
-    
-    try:
-        form = await request.form()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not parse form data: {e}")
-        
-    url_val = form.get("url")
-    file_val = form.get("file")
-    
-    # Extract string from url field if it was passed
-    url = str(url_val).strip() if url_val and isinstance(url_val, str) else None
-    
-    # file_val will be a fastapi.UploadFile object if a file was actually uploaded
-    file = file_val if hasattr(file_val, "filename") and getattr(file_val, "filename") else None
+    logger.info(f"[API] Ingesting URL: {request.url}")
+    background_tasks.add_task(_run_url_ingestion, task_id, request.url)
+    return {"task_id": task_id, "message": f"Ingesting URL: {request.url}"}
 
-    logger.info(f"API INGEST RECEIVED: url={repr(url)}, file_name={file.filename if file else None}")
 
-    if file:
-        # Document upload
-        file_bytes = await file.read()
-        background_tasks.add_task(
-            _run_doc_ingestion,
-            task_id,
-            file_bytes,
-            file.filename,
-            file.content_type or "",
-        )
-        return {"task_id": task_id, "message": f"Ingesting document: {file.filename}"}
-
-    elif url:
-        # URL crawl
-        background_tasks.add_task(_run_url_ingestion, task_id, url)
-        return {"task_id": task_id, "message": f"Ingesting URL: {url}"}
-
-    else:
-        raise HTTPException(status_code=400, detail="Provide either 'url' or a file upload.")
+@router.post("/ingest/doc")
+async def ingest_doc(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """Ingest an uploaded PDF or TXT document into Pinecone."""
+    if not file or not file.filename:
+        raise HTTPException(status_code=400, detail="A file upload is required.")
+    task_id = tracker.create_task()
+    logger.info(f"[API] Ingesting doc: {file.filename}")
+    file_bytes = await file.read()
+    background_tasks.add_task(
+        _run_doc_ingestion, task_id, file_bytes, file.filename, file.content_type or ""
+    )
+    return {"task_id": task_id, "message": f"Ingesting document: {file.filename}"}
 
 
 # ── Ingestion Status ────────────────────────────────────────────────────────
