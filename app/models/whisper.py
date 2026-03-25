@@ -2,18 +2,13 @@
 Silero VAD + faster-whisper STT pipeline.
 
 Pipeline:
-  raw_audio_bytes
-    → convert to 16kHz mono PCM WAV  (pydub)
-    → Silero VAD  (PyTorch, snakers4/silero-vad)
-        → returns timestamped speech segments
-    → slice + concatenate speech-only audio
+  raw_audio_bytes (webm / wav / any)
+    → convert to 16kHz mono PCM WAV  (pydub, requires ffmpeg)
+        IF pydub/ffmpeg not available:
+            → pass raw bytes directly to faster-whisper (it handles any format)
+    → [optional] Silero VAD → speech-only audio
     → faster-whisper transcription
     → text
-
-Silero VAD is a production-grade neural VAD (LSTM) trained by
-snakers4. It runs in ~10-30ms on CPU and achieves near-perfect
-speech/silence discrimination, removing background noise before
-Whisper sees the audio — dramatically improving accuracy.
 """
 import io
 import wave
@@ -21,7 +16,8 @@ import time
 import struct
 import logging
 import os
-from typing import List, Tuple
+from typing import Tuple
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -29,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")
 SAMPLE_RATE        = 16000
-SILERO_THRESHOLD   = 0.4      # speech probability threshold (0–1)
-MIN_SPEECH_MS      = 250      # ignore speech segments shorter than this
-MIN_SILENCE_MS     = 100      # min silence gap between speech segments
+SILERO_THRESHOLD   = 0.4   # speech probability threshold (0–1)
+MIN_SPEECH_MS      = 250   # ignore speech segments shorter than this
+MIN_SILENCE_MS     = 100   # min silence gap between speech segments
 
 _whisper_model = None
 _silero_model  = None
@@ -54,11 +50,7 @@ def get_whisper_model():
 
 
 def get_silero_vad():
-    """
-    Lazy-load Silero VAD model + get_speech_timestamps function.
-    Silero v5 returns utils as a plain 5-tuple:
-      (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks)
-    """
+    """Lazy-load Silero VAD from torch hub (cached after first download)."""
     global _silero_model, _silero_utils
     if _silero_model is None:
         logger.info("Loading Silero VAD...")
@@ -80,8 +72,13 @@ def get_silero_vad():
 
 # ── Audio Conversion ─────────────────────────────────────────────────────────
 
-def _to_16khz_wav(audio_bytes: bytes) -> bytes:
-    """Convert any audio format → 16kHz mono 16-bit PCM WAV."""
+def _to_16khz_wav(audio_bytes: bytes):
+    """
+    Convert any audio format to 16kHz mono 16-bit PCM WAV using pydub.
+    Requires ffmpeg to be installed for webm/ogg/mp4 formats.
+
+    Returns (wav_bytes: bytes, success: bool)
+    """
     try:
         from pydub import AudioSegment
         seg = AudioSegment.from_file(io.BytesIO(audio_bytes))
@@ -90,38 +87,46 @@ def _to_16khz_wav(audio_bytes: bytes) -> bytes:
         seg.export(out, format="wav")
         result = out.getvalue()
         logger.info(f"[STT] Converted: {len(audio_bytes)}B → {len(result)}B (16kHz WAV)")
-        return result
+        return result, True
     except Exception as e:
-        logger.warning(f"[STT] pydub failed ({e}), using raw audio")
-        return audio_bytes
+        logger.warning(f"[STT] pydub conversion failed ({e}). Will pass raw bytes to Whisper.")
+        return audio_bytes, False
+
+
+def _is_valid_wav(audio_bytes: bytes) -> bool:
+    """Return True if the bytes start with a valid RIFF WAV header."""
+    return audio_bytes[:4] == b"RIFF" and audio_bytes[8:12] == b"WAVE"
 
 
 # ── Silero VAD ───────────────────────────────────────────────────────────────
 
 def _silero_filter(wav_bytes: bytes) -> bytes:
     """
-    Run Silero VAD on 16kHz WAV audio.
+    Run Silero VAD on 16kHz mono PCM WAV bytes.
     Returns WAV bytes containing only the speech segments.
+    If no speech is detected, returns the original wav_bytes.
     """
     import torch
 
     model, utils = get_silero_vad()
-    # Unpack by position: (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks)
     get_speech_timestamps = utils[0]
-    # NOTE: utils[2] (read_audio) is broken on torchaudio >= 2.9 (requires torchcodec).
-    # We load the WAV→tensor directly via the wave module instead.
+    # NOTE: utils[2] (read_audio) needs torchcodec on torchaudio >= 2.9 — we load WAV manually instead.
 
     t0 = time.time()
 
-    # Load WAV directly: int16 PCM → float32 tensor normalised to [-1, 1]
-    with wave.open(io.BytesIO(wav_bytes)) as wf:
-        sr     = wf.getframerate()
-        n      = wf.getnframes()
-        raw    = wf.readframes(n)
+    # Load WAV directly: int16 PCM → float32 tensor normalized to [-1, 1]
+    try:
+        with wave.open(io.BytesIO(wav_bytes)) as wf:
+            n   = wf.getnframes()
+            raw = wf.readframes(n)
+    except Exception as e:
+        logger.warning(f"[VAD] Could not open WAV for VAD ({e}). Skipping VAD.")
+        return wav_bytes
+
     samples = struct.unpack(f"<{len(raw)//2}h", raw)
     audio_tensor = torch.tensor(samples, dtype=torch.float32) / 32768.0
 
-    # Get speech timestamps from Silero
+    # Get speech timestamps
     speech_timestamps = get_speech_timestamps(
         audio_tensor,
         model,
@@ -129,28 +134,25 @@ def _silero_filter(wav_bytes: bytes) -> bytes:
         threshold=SILERO_THRESHOLD,
         min_speech_duration_ms=MIN_SPEECH_MS,
         min_silence_duration_ms=MIN_SILENCE_MS,
-        return_seconds=False,   # sample indices
+        return_seconds=False,
     )
 
     elapsed_ms = (time.time() - t0) * 1000
     total_samples = audio_tensor.shape[0]
 
     if not speech_timestamps:
-        logger.warning(f"[VAD] No speech detected in {len(wav_bytes)}B audio ({elapsed_ms:.0f}ms). Using full audio.")
+        logger.warning(f"[VAD] No speech detected ({elapsed_ms:.0f}ms). Using full audio.")
         return wav_bytes
 
     speech_samples = sum(ts["end"] - ts["start"] for ts in speech_timestamps)
     ratio = speech_samples / max(total_samples, 1)
-    logger.info(
-        f"[VAD] {len(speech_timestamps)} segment(s), {ratio:.1%} speech "
-        f"({elapsed_ms:.0f}ms VAD)"
-    )
+    logger.info(f"[VAD] {len(speech_timestamps)} segment(s), {ratio:.1%} speech ({elapsed_ms:.0f}ms)")
 
-    # Concatenate speech segments into a single tensor
+    # Concatenate speech segments
     segments = [audio_tensor[ts["start"]: ts["end"]] for ts in speech_timestamps]
     speech_tensor = torch.cat(segments)
 
-    # Convert float32 → int16 PCM
+    # float32 → int16 PCM
     speech_pcm_np = (speech_tensor.numpy() * 32768).clip(-32768, 32767).astype("int16")
     speech_pcm = speech_pcm_np.tobytes()
 
@@ -168,32 +170,39 @@ def _silero_filter(wav_bytes: bytes) -> bytes:
 
 def transcribe(audio_bytes: bytes) -> Tuple[str, float]:
     """
-    Silero VAD → faster-whisper transcription pipeline.
+    Transcribe audio bytes to text using Silero VAD + faster-whisper.
 
-    Steps:
-      1. Convert to 16kHz mono PCM WAV        (pydub)
-      2. Silero VAD → extract speech segments  (torch, ~10-30ms)
-      3. Whisper transcribe speech-only audio  (faster-whisper)
+    If ffmpeg is available (via pydub):
+        audio → 16kHz WAV → Silero VAD → Whisper
+    If ffmpeg is NOT available:
+        audio → Whisper directly (whisper handles webm/wav/mp4 natively)
 
     Returns: (text, total_elapsed_seconds)
     """
     t_total = time.time()
     model = get_whisper_model()
 
-    # Step 1: Convert
+    # Step 1: Try to convert to clean 16kHz WAV
     t = time.time()
-    wav = _to_16khz_wav(audio_bytes)
-    logger.info(f"[STT] Conversion: {(time.time()-t)*1000:.0f}ms")
+    wav, converted = _to_16khz_wav(audio_bytes)
+    logger.info(f"[STT] Conversion: {(time.time()-t)*1000:.0f}ms (success={converted})")
 
-    # Step 2: Silero VAD
-    t = time.time()
-    speech_wav = _silero_filter(wav)
-    logger.info(f"[STT] VAD+slice: {(time.time()-t)*1000:.0f}ms")
+    if converted and _is_valid_wav(wav):
+        # Step 2: Silero VAD (only when we have valid WAV)
+        t = time.time()
+        speech_wav = _silero_filter(wav)
+        logger.info(f"[STT] VAD+slice: {(time.time()-t)*1000:.0f}ms")
+        audio_for_whisper = io.BytesIO(speech_wav)
+    else:
+        # pydub/ffmpeg not available — pass raw bytes to Whisper directly
+        # faster-whisper uses its own ffmpeg internally to decode any format
+        logger.info("[STT] Skipping VAD — passing raw audio to Whisper")
+        audio_for_whisper = io.BytesIO(audio_bytes)
 
-    # Step 3: Whisper
+    # Step 3: Whisper transcription
     t = time.time()
     segments, _ = model.transcribe(
-        io.BytesIO(speech_wav),
+        audio_for_whisper,
         beam_size=1,
         language="en",
     )
@@ -201,5 +210,5 @@ def transcribe(audio_bytes: bytes) -> Tuple[str, float]:
     logger.info(f"[STT] Whisper: {(time.time()-t)*1000:.0f}ms → '{text[:80]}'")
 
     elapsed = time.time() - t_total
-    logger.info(f"[STT] Total pipeline: {elapsed:.2f}s")
+    logger.info(f"[STT] Total: {elapsed:.2f}s")
     return text, elapsed
