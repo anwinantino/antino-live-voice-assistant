@@ -1154,7 +1154,9 @@
       const pw = document.getElementById('prog-wrap');
       document.getElementById('url-btn').closest('.block').after(pw);
 
-      const task_id = await startIngest({ url });
+      const fd = new FormData();
+      fd.append('url', url);
+      const task_id = await startIngest(fd);
       if (task_id) poll(task_id, url);
     }
 
@@ -1174,20 +1176,21 @@
 
       const fd = new FormData();
       fd.append('file', selectedFile, selectedFile.name);
-      const task_id = await startIngest(null, fd);
+      const task_id = await startIngest(fd);
       if (task_id) poll(task_id, selectedFile.name);
     }
 
-    async function startIngest(json, fd) {
+    async function startIngest(fd) {
       try {
-        const opts = fd
-          ? { method: 'POST', body: fd }
-          : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(json) };
-        const r = await fetch('/api/ingest', opts);
+        const r = await fetch('/api/ingest', { method: 'POST', body: fd });
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
+          throw new Error(err.detail || `HTTP ${r.status}`);
+        }
         const d = await r.json();
         return d.task_id ?? null;
       } catch (e) {
-        alert('Network error: ' + e.message);
+        alert('Ingestion error: ' + e.message);
         setBusy(false);
         return null;
       }

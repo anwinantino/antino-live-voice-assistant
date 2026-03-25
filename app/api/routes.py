@@ -6,7 +6,7 @@ import logging
 import base64
 from typing import Optional
 
-from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -165,7 +165,7 @@ def _run_doc_ingestion(task_id: str, file_bytes: bytes, filename: str, content_t
 @router.post("/ingest")
 async def ingest(
     background_tasks: BackgroundTasks,
-    request: Optional[IngestRequest] = None,
+    url: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(default=None),
 ):
     """
@@ -187,10 +187,10 @@ async def ingest(
         )
         return {"task_id": task_id, "message": f"Ingesting document: {file.filename}"}
 
-    elif request and request.url:
+    elif url:
         # URL crawl
-        background_tasks.add_task(_run_url_ingestion, task_id, request.url)
-        return {"task_id": task_id, "message": f"Ingesting URL: {request.url}"}
+        background_tasks.add_task(_run_url_ingestion, task_id, url)
+        return {"task_id": task_id, "message": f"Ingesting URL: {url}"}
 
     else:
         raise HTTPException(status_code=400, detail="Provide either 'url' or a file upload.")
