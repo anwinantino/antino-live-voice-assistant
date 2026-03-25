@@ -51,6 +51,8 @@
       flex-direction: column;
       align-items: center;
       position: relative;
+      padding: 0 24px;
+      /* side padding so content never touches edges */
     }
 
     /* ambient background glow */
@@ -109,12 +111,15 @@
 
     /* ─── ORB STAGE ──────────────────────────────────────────────────── */
     #orb-stage {
-      flex: 1;
+      flex: 0 0 auto;
+      /* don't grow — give transcript room */
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 28px;
+      gap: 20px;
+      padding: 32px 0 24px;
+      /* breathing room top & bottom */
       z-index: 1;
     }
 
@@ -376,14 +381,17 @@
 
     /* ─── TRANSCRIPT ─────────────────────────────────────────────────── */
     #transcript {
+      flex: 1;
+      /* take all available space between orb and input */
       width: 100%;
       max-width: 580px;
-      max-height: 200px;
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 10px;
-      padding: 0 4px;
+      gap: 16px;
+      /* more breathing room between messages */
+      padding: 8px 0 16px;
+      /* top & bottom breathing room */
       z-index: 1;
       scrollbar-width: none;
     }
@@ -462,6 +470,10 @@
       opacity: 0;
       transition: opacity .4s;
       min-height: 20px;
+      width: 100%;
+      max-width: 580px;
+      padding-bottom: 10px;
+      /* space between pills and input bar */
     }
 
     #perf-row.visible {
@@ -490,7 +502,8 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 0 0 28px;
+      padding: 0 0 32px;
+      /* comfortable bottom clearance */
       z-index: 10;
     }
 
@@ -1137,6 +1150,10 @@
       const url = document.getElementById('url-in').value.trim();
       if (!url) { alert('Enter a URL first.'); return; }
       setBusy(true);
+      // Move progress bar under URL block
+      const pw = document.getElementById('prog-wrap');
+      document.getElementById('url-btn').parentElement.after(pw);
+
       const task_id = await startIngest({ url });
       if (task_id) poll(task_id, url);
     }
@@ -1150,6 +1167,11 @@
     async function ingestDoc() {
       if (!selectedFile) return;
       setBusy(true);
+
+      // Move progress bar under Document block
+      const pw = document.getElementById('prog-wrap');
+      document.getElementById('file-btn').parentElement.after(pw);
+
       const fd = new FormData();
       fd.append('file', selectedFile, selectedFile.name);
       const task_id = await startIngest(null, fd);
@@ -1178,8 +1200,13 @@
       const pm = document.getElementById('prog-msg');
       const pt = document.getElementById('prog-title');
 
+      // Reset styles
       pw.classList.add('show');
+      pt.style.color = 'var(--text-dim)';
+      pf.style.background = 'linear-gradient(90deg, var(--accent), var(--green))';
       pt.textContent = label;
+      pf.style.width = '0%';
+      pp.textContent = '0%';
 
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(async () => {
@@ -1189,10 +1216,29 @@
           pf.style.width = `${d.progress}%`;
           pp.textContent = `${d.progress}%`;
           pm.textContent = d.message ?? '';
+
           if (d.status === 'done' || d.status === 'error') {
             clearInterval(pollTimer);
             setBusy(false);
             addHistory(label, d.status);
+
+            // Show completion state
+            if (d.status === 'done') {
+              pt.textContent = 'Completed!';
+              pt.style.color = 'var(--green)';
+              pm.textContent = 'Successfully indexed to Pinecone.';
+            } else {
+              pt.textContent = 'Error';
+              pt.style.color = 'var(--red)';
+              pf.style.background = 'var(--red)';
+            }
+
+            // Auto-hide progress bar after 3 seconds
+            setTimeout(() => {
+              pw.classList.remove('show');
+            }, 3000);
+
+            // Reset inputs
             document.getElementById('url-in').value = '';
             document.getElementById('file-label').textContent = '';
             document.getElementById('file-btn').disabled = true;
