@@ -6,7 +6,7 @@ import logging
 import base64
 from typing import Optional
 
-from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks, Form
+from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks, Form, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -164,18 +164,31 @@ def _run_doc_ingestion(task_id: str, file_bytes: bytes, filename: str, content_t
 
 @router.post("/ingest")
 async def ingest(
+    request: Request,
     background_tasks: BackgroundTasks,
-    url: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(default=None),
 ):
     """
     Ingest a URL or uploaded document into Pinecone.
-    Returns task_id for polling progress.
-    Note: Runs ONLY in background — does not block query endpoints.
     """
     task_id = tracker.create_task()
+    
+    try:
+        form = await request.form()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not parse form data: {e}")
+        
+    url_val = form.get("url")
+    file_val = form.get("file")
+    
+    # Extract string from url field if it was passed
+    url = str(url_val).strip() if url_val and isinstance(url_val, str) else None
+    
+    # file_val will be a fastapi.UploadFile object if a file was actually uploaded
+    file = file_val if hasattr(file_val, "filename") and getattr(file_val, "filename") else None
 
-    if file and file.filename:
+    logger.info(f"API INGEST RECEIVED: url={repr(url)}, file_name={file.filename if file else None}")
+
+    if file:
         # Document upload
         file_bytes = await file.read()
         background_tasks.add_task(
