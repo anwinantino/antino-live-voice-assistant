@@ -21,6 +21,46 @@ ollama==0.2.1
 # Speech-to-Text
 faster-whisper==1.0.3
 
+# VAD (Silero — loaded via torch hub, no extra pip install)
+torch --index-url https://download.pytorch.org/whl/cpu
+torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Audio conversion (optional: needs FFmpeg installed for non-WAV formats)
+pydub==0.25.1
+
+# Text-to-Speech
+gTTS==2.5.1
+
+# Web Scraping & Document Parsing
+beautifulsoup4==4.12.3
+requests==2.32.3
+lxml==5.2.2
+pypdf==4.2.0
+httpx==0.27.0
+
+# Utilities
+python-dotenv==1.0.1
+tqdm==4.66.4
+numpy==1.26.4
+
+
+# LangChain / LangGraph
+langchain==0.2.6
+langchain-community==0.2.6
+langgraph==0.1.13
+
+# Pinecone
+pinecone==4.1.0
+
+# Embeddings
+sentence-transformers==3.0.1
+
+# Ollama
+ollama==0.2.1
+
+# Speech-to-Text
+faster-whisper==1.0.3
+
 # Text-to-Speech
 gTTS==2.5.1
 
