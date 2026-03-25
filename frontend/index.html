@@ -904,9 +904,11 @@
     let audioChunks = [];
     let audioQueue = [];
     let isPlaying = false;
+    let inFlight = false;   // guard: only one request at a time
     let selectedFile = null;
     let pollTimer = null;
     let activeAIMsgEl = null;
+    const MIN_AUDIO_BYTES = 2048;  // ignore blobs smaller than 2KB (tap noise)
 
     function setState(s) {
       document.body.className = s;
@@ -949,15 +951,32 @@
 
     async function submitVoice() {
       const blob = new Blob(audioChunks, { type: 'audio/webm' });
+
+      // Guard: ignore accidental taps (< 2KB) or in-flight requests
+      if (blob.size < MIN_AUDIO_BYTES) {
+        setState('idle');
+        return;
+      }
+      if (inFlight) return;
+
       const fd = new FormData();
       fd.append('audio', blob, 'recording.webm');
       resetResponse();
       setState('thinking');
+      inFlight = true;
       try {
         const res = await fetch('/api/voice-chat-stream', { method: 'POST', body: fd });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+          appendError(err.detail || `HTTP ${res.status}`);
+          setState('idle');
+          return;
+        }
         await consumeSSE(res);
       } catch (e) {
         appendError(e.message);
+      } finally {
+        inFlight = false;
       }
     }
 
@@ -966,26 +985,37 @@
       if (e.key === 'Enter') sendText();
     }
     async function sendText() {
+      if (inFlight) return;
       const q = document.getElementById('text-input').value.trim();
       if (!q) return;
       document.getElementById('text-input').value = '';
       resetResponse();
       appendMsg('user', 'You', q);
       setState('thinking');
+      inFlight = true;
       try {
         const res = await fetch('/api/text-chat-stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: q }),
         });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+          appendError(err.detail || `HTTP ${res.status}`);
+          setState('idle');
+          return;
+        }
         await consumeSSE(res);
       } catch (e) {
         appendError(e.message);
+      } finally {
+        inFlight = false;
       }
     }
 
     /* ── SSE consumer ───────────────────────────────────────────────── */
     async function consumeSSE(response) {
+      // response.ok already checked by caller; start reading the stream
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
